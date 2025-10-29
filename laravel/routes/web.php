@@ -14,4 +14,6 @@ Route::get('/timetable/{id}', [TimetableUIController::class, 'show'])->name('tt.
 // NEW: DnD endpoints
 Route::post('/timetable/{id}/move', [TimetableUIController::class, 'move'])->name('tt.move');
 Route::post('/timetable/{id}/validate', [TimetableUIController::class, 'validateNow'])->name('tt.validate');
+Route::get('/timetable/{id}/workload', [TimetableUIController::class, 'workload'])->name('tt.workload');
+
 

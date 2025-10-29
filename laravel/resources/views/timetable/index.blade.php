@@ -29,6 +29,7 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Run a new generation</h2>
+    
     <form method="POST" action="{{ route('tt.generate') }}">
       @csrf
       <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">

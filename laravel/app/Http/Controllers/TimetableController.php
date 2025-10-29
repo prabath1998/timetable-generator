@@ -50,7 +50,8 @@ class TimetableController extends Controller
             return response()->json(['message'=>'Solver error','detail'=>$res->body()], 422);
         }
 
-        $data = $res->json(); 
+        $data = $res->json();
+
 
         DB::transaction(function() use ($reqId,$data){
             foreach ($data['assignments'] as $a) {

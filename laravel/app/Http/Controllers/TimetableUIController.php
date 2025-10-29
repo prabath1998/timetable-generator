@@ -55,6 +55,8 @@ class TimetableUIController extends Controller
         ]);
 
         try {
+
+                        info(json_encode($payload));
             $solverUrl = rtrim(config('app.solver_url', env('SOLVER_URL')), '/');
             $res = Http::timeout(120)->post($solverUrl.'/solve', $payload);
 
@@ -277,5 +279,70 @@ public function validateNow(Request $request, $id)
     }
     return response()->json($res->json());
 }
+
+public function workload($id)
+{
+    // Teachers
+    $teachers = \DB::table('teachers')->select('id','name')->orderBy('name')->get();
+    $teacherIndex = $teachers->pluck('name','id'); // [id => name]
+
+    // Total periods per teacher for this timetable
+    $totals = \DB::table('timetable_entries as e')
+        ->where('e.timetable_request_id', $id)
+        ->join('teachers as t','t.id','=','e.teacher_id')
+        ->select('e.teacher_id', \DB::raw('COUNT(*) as periods'))
+        ->groupBy('e.teacher_id')
+        ->get();
+
+    // Periods per teacher per day (for heatmap)
+    $perDay = \DB::table('timetable_entries as e')
+        ->where('e.timetable_request_id', $id)
+        ->join('timeslots as ts','ts.id','=','e.timeslot_id')
+        ->select('e.teacher_id','ts.day_of_week', \DB::raw('COUNT(*) as periods'))
+        ->groupBy('e.teacher_id','ts.day_of_week')
+        ->get();
+
+    // Build arrays for charts
+    $barCategories = [];
+    $barData = [];
+
+    foreach ($teachers as $t) {
+        $barCategories[] = $t->name;
+        $count = $totals->firstWhere('teacher_id', $t->id)->periods ?? 0;
+        $barData[] = (int) $count;
+    }
+
+    // Heatmap series: one series per teacher, x = day, y = count
+    $dayNames = [1=>'Mon',2=>'Tue',3=>'Wed',4=>'Thu',5=>'Fri',6=>'Sat',7=>'Sun'];
+    $heatmapSeries = [];
+    foreach ($teachers as $t) {
+        // Initialize 1..7 to 0
+        $row = [];
+        for ($d=1; $d<=7; $d++) {
+            $row[$d] = 0;
+        }
+        foreach ($perDay->where('teacher_id',$t->id) as $rec) {
+            $row[$rec->day_of_week] = (int) $rec->periods;
+        }
+        $heatmapSeries[] = [
+            'name' => $t->name,
+            'data' => array_map(function($dayIdx) use ($row, $dayNames){
+                return ['x' => $dayNames[$dayIdx] ?? "Day $dayIdx", 'y' => $row[$dayIdx]];
+            }, array_keys($row))
+        ];
+    }
+
+    // Also fetch the request for header/breadcrumb
+    $req = \DB::table('timetable_requests')->where('id',$id)->first();
+
+    return view('timetable.workload', [
+        'id'             => $id,
+        'req'            => $req,
+        'barCategories'  => $barCategories,
+        'barData'        => $barData,
+        'heatmapSeries'  => $heatmapSeries,
+    ]);
+}
+
 
 }
