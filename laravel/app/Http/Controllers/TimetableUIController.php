@@ -102,7 +102,7 @@ class TimetableUIController extends Controller
     public function show($id)
     {
         $days  = range(1, 5);
-        $slots = range(1, 8); 
+        $slots = range(1, 8);
 
         // timeslot map once
         $timeslots = \DB::table('timeslots')->get(['id','day_of_week','slot_index']);
@@ -352,13 +352,16 @@ class TimetableUIController extends Controller
         // Also fetch the request for header/breadcrumb
         $req = \DB::table('timetable_requests')->where('id',$id)->first();
 
-        return view('timetable.workload', [
-            'id'             => $id,
-            'req'            => $req,
-            'barCategories'  => $barCategories,
-            'barData'        => $barData,
-            'heatmapSeries'  => $heatmapSeries,
-        ]);
+       $weeklySlots = \DB::table('timeslots')->count(); // e.g., 40
+return view('timetable.workload', [
+  'id' => $id,
+  'req' => $req,
+  'barCategories' => $barCategories,
+  'barData' => $barData,
+  'heatmapSeries' => $heatmapSeries,
+  'weeklySlots' => $weeklySlots, // 👈 add
+]);
+
     }
 
 
