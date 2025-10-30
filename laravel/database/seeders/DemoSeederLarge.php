@@ -7,14 +7,14 @@ use Illuminate\Support\Facades\DB;
 
 class DemoSeederLarge extends Seeder
 {
+    // target weekly lessons per GROUP (keep < 40; 15 keeps solver comfy)
+    private const PER_GROUP_WEEKLY = 15;
+
     public function run(): void
     {
-        // Marker to ensure THIS file is running
-        $this->command?->info('>>> USING SEEDER FILE: '.__FILE__);
-
+        $this->command?->info('>>> USING SEEDER FILE: '.__FILE__.' (8 periods/day, 40/week)');
         mt_srand(20251030);
 
-        // Clean slate
         DB::statement('SET FOREIGN_KEY_CHECKS=0');
         foreach ([
             'timetable_entries',
@@ -27,10 +27,8 @@ class DemoSeederLarge extends Seeder
             'grades',
             'sections',
             'timeslots',
-        ] as $table) {
-            if (DB::getSchemaBuilder()->hasTable($table)) {
-                DB::table($table)->truncate();
-            }
+        ] as $t) {
+            if (DB::getSchemaBuilder()->hasTable($t)) DB::table($t)->truncate();
         }
         DB::statement('SET FOREIGN_KEY_CHECKS=1');
 
@@ -40,8 +38,8 @@ class DemoSeederLarge extends Seeder
         $secPrimary   = DB::table('sections')->insertGetId(['name'=>'Primary','created_at'=>now(),'updated_at'=>now()]);
         $secSecondary = DB::table('sections')->insertGetId(['name'=>'Secondary','created_at'=>now(),'updated_at'=>now()]);
 
-        $gradeIds = [];   // Grades 1..10
-        $groupIds = [];   // 5 groups per grade => 50
+        $gradeIds = [];  // 1..10
+        $groupIds = [];  // [grade => [A..E => id]]
         foreach (range(1,10) as $gNum) {
             $gid = DB::table('grades')->insertGetId([
                 'section_id' => $gNum <= 5 ? $secPrimary : $secSecondary,
@@ -63,9 +61,8 @@ class DemoSeederLarge extends Seeder
         }
 
         // ----------------------------
-        // Subjects (15 total)
+        // Subjects (15 total) + weekly slots (Math/Eng are 3; others 1)
         // ----------------------------
-        // Keep 15 subjects globally; we’ll include a subset per grade that sums to EXACTLY 12.
         $subjects = [
             ['name'=>'Mathematics',        'weekly_slots'=>3],
             ['name'=>'English',            'weekly_slots'=>3],
@@ -83,7 +80,7 @@ class DemoSeederLarge extends Seeder
             ['name'=>'Economics',          'weekly_slots'=>1],
             ['name'=>'Business Studies',   'weekly_slots'=>1],
         ];
-        $subjectIdByName = [];
+        $sidByName = [];
         foreach ($subjects as $s) {
             $sid = DB::table('subjects')->insertGetId([
                 'name'         => $s['name'],
@@ -91,31 +88,34 @@ class DemoSeederLarge extends Seeder
                 'created_at'   => now(),
                 'updated_at'   => now(),
             ]);
-            $subjectIdByName[$s['name']] = $sid;
+            $sidByName[$s['name']] = $sid;
         }
 
         // ----------------------------
-        // grade_subject subsets (sum = 12 per grade)
+        // grade_subject subsets that sum to EXACTLY 15 lessons/week per group
         // ----------------------------
-        // Primary (grades 1–5): 2 core (3+3) + 6 one-slot = 12
+        // 3 + 3 + (9 × 1) = 15
         $primarySubset = [
-            'Mathematics','English', // 6
-            'Science','Second Language','ICT','History','Geography','Physical Education' // +6 = 12
+            'Mathematics','English',
+            'Science','Second Language','ICT','History','Geography','Physical Education','Aesthetics','Civics','Economics'
         ];
-
-        // Secondary (grades 6–10): 2 core (3+3) + 6 one-slot = 12
-        // Slightly different mix to vary teacher subjects
         $secondarySubset = [
-            'Mathematics','English', // 6
-            'Physics','Chemistry','Biology','Economics','Business Studies','Civics' // +6 = 12
+            'Mathematics','English',
+            'Physics','Chemistry','Biology','Economics','Business Studies','Civics','ICT','Second Language','History'
         ];
 
         foreach ($gradeIds as $gNum => $gid) {
             $subset = $gNum <= 5 ? $primarySubset : $secondarySubset;
+            // sanity: make sure it sums to PER_GROUP_WEEKLY
+            $sum = 0;
+            foreach ($subset as $name) $sum += (int) DB::table('subjects')->where('id',$sidByName[$name])->value('weekly_slots');
+            if ($sum !== self::PER_GROUP_WEEKLY) {
+                throw new \RuntimeException("Subset for Grade {$gNum} sums to {$sum}, expected ".self::PER_GROUP_WEEKLY);
+            }
             foreach ($subset as $name) {
                 DB::table('grade_subject')->insert([
                     'grade_id'   => $gid,
-                    'subject_id' => $subjectIdByName[$name],
+                    'subject_id' => $sidByName[$name],
                     'created_at' => now(),
                     'updated_at' => now(),
                 ]);
@@ -159,7 +159,7 @@ class DemoSeederLarge extends Seeder
             'Business Studies'   => 'Biz',
         ];
 
-        // Build medium-size buckets (6–10 teachers) per family
+        // teacher buckets (6–10 per family)
         $buckets = [];
         foreach (array_unique(array_values($familyBySubject)) as $fam) {
             $pool = $teacherIds;
@@ -167,30 +167,31 @@ class DemoSeederLarge extends Seeder
             $buckets[$fam] = array_slice($pool, 0, mt_rand(6,10));
         }
 
-        // Track teacher load and prefer the least-loaded in each bucket
+        // balance load; try not to exceed 40 per teacher
         $teacherLoad = array_fill_keys($teacherIds, 0);
 
-        $pickTeacher = function (string $subject) use (&$buckets, &$teacherLoad, $familyBySubject, $teacherIds) {
+        $pickTeacher = function (string $subject, int $need) use (&$buckets, &$teacherLoad, $familyBySubject, $teacherIds) {
             $fam  = $familyBySubject[$subject] ?? 'Gen';
             $pool = $buckets[$fam] ?? $teacherIds;
-            usort($pool, fn($a,$b) => $teacherLoad[$a] <=> $teacherLoad[$b]);
-            return $pool[0];
+            usort($pool, function($a,$b) use ($teacherLoad){
+                // prefer lower load; slight bias against people already >= 40
+                $la = $teacherLoad[$a] + ($teacherLoad[$a] >= 40 ? 1000 : 0);
+                $lb = $teacherLoad[$b] + ($teacherLoad[$b] >= 40 ? 1000 : 0);
+                return $la <=> $lb;
+            });
+            $chosen = $pool[0];
+            $teacherLoad[$chosen] += $need;
+            return $chosen;
         };
 
-        // -----------------------------------
-        // group_teacher: per group, assign subset subjects
-        // Total demand = 50 × 12 = 600 (slack vs capacity 700)
-        // -----------------------------------
+        // group_teacher assignments
         foreach ($groupIds as $gNum => $letters) {
             $subset = $gNum <= 5 ? $primarySubset : $secondarySubset;
             foreach ($letters as $groupId) {
                 foreach ($subset as $subjName) {
-                    $sid  = $subjectIdByName[$subjName];
-                    $need = (int) DB::table('subjects')->where('id',$sid)->value('weekly_slots');
-
-                    $tid = $pickTeacher($subjName);
-                    $teacherLoad[$tid] += $need;
-
+                    $sid   = $sidByName[$subjName];
+                    $need  = (int) DB::table('subjects')->where('id',$sid)->value('weekly_slots');
+                    $tid   = $pickTeacher($subjName, $need);
                     DB::table('group_teacher')->insert([
                         'group_id'   => $groupId,
                         'teacher_id' => $tid,
@@ -203,12 +204,12 @@ class DemoSeederLarge extends Seeder
         }
 
         // ----------------------------
-        // Timeslots: 5 days × 7 periods = 35/week
+        // Timeslots: **8 per day** × 5 days = **40/week**
         // ----------------------------
         $startHour = 8; $startMin = 15; $blockMin = 40; $gapMin = 5;
         for ($d = 1; $d <= 5; $d++) {
             $h = $startHour; $m = $startMin;
-            for ($p = 1; $p <= 7; $p++) {
+            for ($p = 1; $p <= 8; $p++) {   // <= 8 (was 7)
                 $start = sprintf('%02d:%02d:00', $h, $m);
                 $m2 = $m + $blockMin;
                 $h2 = $h + intdiv($m2, 60);
@@ -224,15 +225,19 @@ class DemoSeederLarge extends Seeder
                     'updated_at'  => now(),
                 ]);
 
+                // next slot (small gap)
                 $m = $m2 + $gapMin;
                 $h += intdiv($m, 60);
                 $m = $m % 60;
             }
         }
 
-        // Request row so UI shows a run
+        // Seed one pending request so UI can run immediately
         DB::table('timetable_requests')->insert([
-            'constraints' => json_encode(['seed' => '20T-50G-15S-12pw']),
+            'constraints' => json_encode([
+                'seed' => '20T-50G-15S-8x5',
+                'notes' => '8 periods/day; 15 lessons/group/week',
+            ]),
             'status'      => 'pending',
             'error'       => null,
             'created_at'  => now(),
@@ -240,10 +245,11 @@ class DemoSeederLarge extends Seeder
         ]);
 
         // Stats
-        $this->command?->info('Seeded: teachers=20, groups=50, subjects=15, group_load=12, timeslots=35');
+        $groupsCount = array_reduce($groupIds, fn($c,$r)=>$c+count($r), 0);
+        $this->command?->info("Seeded: teachers=20, groups={$groupsCount}, subjects=15, days=5, periods/day=8 (40/wk)");
         asort($teacherLoad);
         $top = array_slice($teacherLoad, -5, 5, true);
-        $this->command?->info('Top teacher loads (should be well < 35 now):');
+        $this->command?->info('Top teacher loads (should be < 40):');
         foreach ($top as $tid=>$v) {
             $name = DB::table('teachers')->where('id',$tid)->value('name');
             $this->command?->info(" - {$name}: {$v}");

@@ -342,249 +342,202 @@
     </main>
 
     {{-- Tabs + DnD + “only this teacher” logic --}}
-    <script>
-        // ---------- Blade -> JS data (safe) ----------
-        const REQ_ID = {{ (int) $id }};
-        const BY_GROUP = @json($byGroup ?? []);
-        const BY_TEACHER = @json($byTeacher ?? []);
-        const DAYS = @json($days ?? []);
-        const SLOTS = @json($slots ?? []);
-        const TS_MAP = @json($timeslotIdMap ?? []);  // TS_MAP[day][slot] -> timeslot_id
-        const DAY_NAMES = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat', 7: 'Sun' };
+   <script>
+  // ====== Blade → JS (safe) ======
+  const REQ_ID   = {{ (int) $id }};
+  const BY_GROUP = @json($byGroup ?? []);
+  const BY_TEACHER = @json($byTeacher ?? []);
+  const DAYS     = @json($days ?? []);
+  const SLOTS    = @json($slots ?? []);
+  const TS_MAP   = @json($timeslotIdMap );
+  const DAY_NAMES = {1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat',7:'Sun'};
 
-        // ---------- UI helpers ----------
-        function activateTab(tab) {
-            document.querySelectorAll('button[id^="tab-"]').forEach(b => {
-                b.classList.remove('bg-gray-900', 'text-white', 'border-gray-900');
+  // ====== Tabs / filters ======
+  function activateTab(tab){
+    document.querySelectorAll('button[id^="tab-"]').forEach(b=>b.classList.remove('bg-gray-900','text-white','border-gray-900'));
+    document.getElementById('tab-'+tab)?.classList.add('bg-gray-900','text-white','border-gray-900');
+
+    document.getElementById('groupFilter')?.classList.toggle('hidden', tab!=='group');
+    document.getElementById('teacherFilter')?.classList.toggle('hidden', tab!=='teacher');
+
+    document.querySelectorAll('section[id^="panel-"]').forEach(p=>p.classList.add('hidden'));
+    document.getElementById('panel-'+tab)?.classList.remove('hidden');
+  }
+  window.switchTab = (tab)=>activateTab(tab);
+
+  // ====== Chip color ======
+  function subjectChip(subject){
+    const palette = [
+      'bg-rose-100 text-rose-800 ring-rose-200',
+      'bg-sky-100 text-sky-800 ring-sky-200',
+      'bg-amber-100 text-amber-900 ring-amber-200',
+      'bg-emerald-100 text-emerald-800 ring-emerald-200',
+      'bg-indigo-100 text-indigo-800 ring-indigo-200',
+      'bg-fuchsia-100 text-fuchsia-800 ring-fuchsia-200',
+      'bg-cyan-100 text-cyan-800 ring-cyan-200',
+      'bg-lime-100 text-lime-800 ring-lime-200',
+      'bg-violet-100 text-violet-800 ring-violet-200',
+      'bg-orange-100 text-orange-900 ring-orange-200',
+      'bg-teal-100 text-teal-800 ring-teal-200',
+      'bg-pink-100 text-pink-800 ring-pink-200',
+    ];
+    let h=0; for(let i=0;i<subject.length;i++){ h=(h*33+subject.charCodeAt(i))>>>0; }
+    return palette[h % palette.length];
+  }
+
+  // ====== Drag & drop handlers (global) ======
+  const csrf = () => document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+  let dragEntryId = null;
+
+  function onDragStart(ev){
+    const el = ev.target.closest('[data-entry-id]');
+    dragEntryId = el && el.dataset.entryId;
+    ev.dataTransfer.setData('text/plain', dragEntryId || '');
+    ev.dataTransfer.effectAllowed = 'move';
+  }
+  function onDragOver(ev){ ev.preventDefault(); ev.currentTarget.classList.add('ring','ring-emerald-400','ring-offset-2','ring-offset-white'); }
+  function onDragLeave(ev){ ev.currentTarget.classList.remove('ring','ring-emerald-400','ring-offset-2','ring-offset-white'); }
+  async function onDrop(ev, reqId){
+    ev.preventDefault();
+    const cell = ev.currentTarget;
+    cell.classList.remove('ring','ring-emerald-400','ring-offset-2','ring-offset-white');
+
+    const toTsId = cell.dataset.timeslotId;
+    if (!dragEntryId || !toTsId) return;
+
+    const occupant = cell.querySelector('[data-entry-id]');
+    let body = { entry_id: dragEntryId, to_timeslot_id: toTsId };
+    if (occupant) body.swap_with_entry_id = occupant.dataset.entryId;
+
+    try{
+      const res = await fetch(`${location.origin}/timetable/${reqId}/move`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-CSRF-TOKEN': csrf()},
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data?.needs_swap) {
+          if (confirm('Destination occupied. Swap lessons?')) {
+            body.swap_with_entry_id = data.swap_candidate_id;
+            const res2 = await fetch(`${location.origin}/timetable/${reqId}/move`, {
+              method:'POST',
+              headers:{'Content-Type':'application/json','X-CSRF-TOKEN': csrf()},
+              body: JSON.stringify(body)
             });
-            document.getElementById('tab-' + tab)?.classList.add('bg-gray-900', 'text-white', 'border-gray-900');
+            const data2 = await res2.json();
+            if (res2.ok && data2.ok) location.reload(); else alert(data2.message || 'Swap failed');
+          }
+        } else { alert(data?.message || 'Move not allowed'); }
+        return;
+      }
+      if (data.ok) location.reload(); else alert(data.message || 'Move failed');
+    } catch { alert('Network error'); }
+  }
+  // expose
+  window.onDragStart = onDragStart;
+  window.onDragOver  = onDragOver;
+  window.onDragLeave = onDragLeave;
+  window.onDrop      = onDrop;
 
-            document.getElementById('groupFilter')?.classList.toggle('hidden', tab !== 'group');
-            document.getElementById('teacherFilter')?.classList.toggle('hidden', tab !== 'teacher');
+  // ====== Builders (insert entry_id + timeslot_id + inline handlers) ======
+  function buildCell(d,s,contentHtml){
+    const tsId = (TS_MAP[d] && TS_MAP[d][s]) ? TS_MAP[d][s] : '';
+    return `<td class="align-top min-h-[48px] py-1.5 px-2 sm:px-3"
+              data-timeslot-id="${tsId}"
+              ondragover="onDragOver(event)"
+              ondragleave="onDragLeave(event)"
+              ondrop="onDrop(event, ${REQ_ID})">${contentHtml}</td>`;
+  }
 
-            document.querySelectorAll('section[id^="panel-"]').forEach(p => p.classList.add('hidden'));
-            document.getElementById('panel-' + tab)?.classList.remove('hidden');
+  function renderTeacher(tid){
+    const m = BY_TEACHER[tid] || {};
+    let thead = `<thead class="bg-gray-100"><tr class="text-gray-700"><th class="text-left py-2 px-3 w-28">Day \\ Slot</th>`;
+    SLOTS.forEach(s => thead += `<th class="text-left py-2 px-2 sm:px-3">P${s}</th>`); thead += `</tr></thead>`;
+
+    let tbody = `<tbody class="divide-y divide-gray-100">`;
+    DAYS.forEach(d => {
+      tbody += `<tr class="bg-white"><th class="text-left py-2 px-3 font-medium text-gray-700 sticky left-0 bg-white">${DAY_NAMES[d]||('Day '+d)}</th>`;
+      SLOTS.forEach(s => {
+        const cell = (m[d] && m[d][s]) ? m[d][s] : null;
+        if (cell) {
+          const chip = subjectChip(cell.subject);
+          const entryId = cell.entry_id; // ✅ must be present
+          tbody += buildCell(d,s,
+            `<div class="rounded-lg border border-gray-200 bg-white px-2 py-1.5 cursor-grab shadow-sm hover:shadow transition"
+                  draggable="true" ondragstart="onDragStart(event)" data-entry-id="${entryId}"
+                  title="${cell.subject} • ${cell.group}">
+               <span class="inline-flex items-center gap-2">
+                 <span class="inline-flex items-center rounded-md px-2 py-0.5 text-[11px] ring-1 ${chip}">${cell.subject}</span>
+                 <span class="text-gray-600 truncate max-w-[12rem]">— ${cell.group}</span>
+               </span>
+             </div>`);
+        } else {
+          tbody += buildCell(d,s, `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] border text-gray-600">Free</span>`);
         }
-        function switchTab(tab) { activateTab(tab); }
+      });
+      tbody += `</tr>`;
+    });
+    tbody += `</tbody>`;
+    return `<table class="w-full text-[13px] sm:text-sm">${thead}${tbody}</table>`;
+  }
 
-        // ---------- Subject chip color ----------
-        function subjectChip(subject) {
-            const palette = [
-                'bg-rose-100 text-rose-800 ring-rose-200',
-                'bg-sky-100 text-sky-800 ring-sky-200',
-                'bg-amber-100 text-amber-900 ring-amber-200',
-                'bg-emerald-100 text-emerald-800 ring-emerald-200',
-                'bg-indigo-100 text-indigo-800 ring-indigo-200',
-                'bg-fuchsia-100 text-fuchsia-800 ring-fuchsia-200',
-                'bg-cyan-100 text-cyan-800 ring-cyan-200',
-                'bg-lime-100 text-lime-800 ring-lime-200',
-                'bg-violet-100 text-violet-800 ring-violet-200',
-                'bg-orange-100 text-orange-900 ring-orange-200',
-                'bg-teal-100 text-teal-800 ring-teal-200',
-                'bg-pink-100 text-pink-800 ring-pink-200',
-            ];
-            let h = 0;
-            for (let i = 0; i < subject.length; i++) { h = (h * 33 + subject.charCodeAt(i)) >>> 0; }
-            return palette[h % palette.length];
+  function renderGroup(gid){
+    const m = BY_GROUP[gid] || {};
+    let thead = `<thead class="bg-gray-100"><tr class="text-gray-700"><th class="text-left py-2 px-3 w-28">Day \\ Slot</th>`;
+    SLOTS.forEach(s => thead += `<th class="text-left py-2 px-2 sm:px-3">P${s}</th>`); thead += `</tr></thead>`;
+
+    let tbody = `<tbody class="divide-y divide-gray-100">`;
+    DAYS.forEach(d => {
+      tbody += `<tr class="bg-white"><th class="text-left py-2 px-3 font-medium text-gray-700 sticky left-0 bg-white">${DAY_NAMES[d]||('Day '+d)}</th>`;
+      SLOTS.forEach(s => {
+        const cell = (m[d] && m[d][s]) ? m[d][s] : null;
+        if (cell) {
+          const chip = subjectChip(cell.subject);
+          const entryId = cell.entry_id; // ✅ must be present
+          tbody += buildCell(d,s,
+            `<div class="rounded-lg border border-gray-200 bg-white px-2 py-1.5 cursor-grab shadow-sm hover:shadow transition"
+                  draggable="true" ondragstart="onDragStart(event)" data-entry-id="${entryId}"
+                  title="${cell.subject} • ${cell.teacher}">
+               <span class="inline-flex items-center gap-2">
+                 <span class="inline-flex items-center rounded-md px-2 py-0.5 text-[11px] ring-1 ${chip}">${cell.subject}</span>
+                 <span class="text-gray-600 truncate max-w-[12rem]">— ${cell.teacher}</span>
+               </span>
+             </div>`);
+        } else {
+          tbody += buildCell(d,s, `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] border text-gray-600">Free</span>`);
         }
+      });
+      tbody += `</tr>`;
+    });
+    tbody += `</tbody>`;
+    return `<table class="w-full text-[13px] sm:text-sm">${thead}${tbody}</table>`;
+  }
 
-        // ---------- Drag & drop ----------
-        const csrf = () => document.querySelector('meta[name="csrf-token"]').getAttribute('content');
-        let dragEntryId = null;
+  // ====== Public APIs called by <select> onchange ======
+  window.showOnlyTeacher = function(){
+    const tid = document.getElementById('teacherSel').value;
+    document.getElementById('teacherPanelTitle').textContent =
+      `Teacher: ${document.querySelector(`#teacherSel option[value="${tid}"]`)?.textContent || '—'}`;
+    document.getElementById('teacherPanelBody').innerHTML = renderTeacher(tid);
+  };
 
-        function onDragStart(ev) {
-            const el = ev.target.closest('[data-entry-id]');
-            dragEntryId = el?.dataset.entryId;
-            ev.dataTransfer.setData('text/plain', dragEntryId);
-            ev.dataTransfer.effectAllowed = 'move';
-        }
-        function onDragOver(ev) {
-            ev.preventDefault();
-            const cell = ev.currentTarget;
-            cell.classList.add('ring', 'ring-emerald-400', 'ring-offset-2', 'ring-offset-white');
-        }
-        function onDragLeave(ev) {
-            const cell = ev.currentTarget;
-            cell.classList.remove('ring', 'ring-emerald-400', 'ring-offset-2', 'ring-offset-white');
-        }
-        async function onDrop(ev, reqId) {
-            ev.preventDefault();
-            const cell = ev.currentTarget;
-            cell.classList.remove('ring', 'ring-emerald-400', 'ring-offset-2', 'ring-offset-white');
+  window.showOnlyGroup = function(){
+    const gid = document.getElementById('groupSel').value;
+    document.getElementById('groupPanelTitle').textContent =
+      `Group: ${document.querySelector(`#groupSel option[value="${gid}"]`)?.textContent || '—'}`;
+    document.getElementById('groupPanelBody').innerHTML = renderGroup(gid);
+  };
 
-            const toTsId = cell.dataset.timeslotId;
-            if (!dragEntryId || !toTsId) return;
+  // ====== Init ======
+  window.addEventListener('DOMContentLoaded', ()=>{
+    activateTab('full'); // default tab
+    // If you want immediate render when entering tabs, uncomment:
+    // if (document.getElementById('teacherSel')) showOnlyTeacher();
+    // if (document.getElementById('groupSel'))   showOnlyGroup();
+  });
+</script>
 
-            const occupant = cell.querySelector('[data-entry-id]');
-            let body = { entry_id: dragEntryId, to_timeslot_id: toTsId };
-            if (occupant) body.swap_with_entry_id = occupant.dataset.entryId;
-
-            try {
-                const res = await fetch(`${location.origin}/timetable/${reqId}/move`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf() },
-                    body: JSON.stringify(body)
-                });
-                const data = await res.json();
-
-                if (!res.ok) {
-                    if (data?.needs_swap) {
-                        if (confirm('Destination occupied. Swap lessons?')) {
-                            body.swap_with_entry_id = data.swap_candidate_id;
-                            const res2 = await fetch(`${location.origin}/timetable/${reqId}/move`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf() },
-                                body: JSON.stringify(body)
-                            });
-                            const data2 = await res2.json();
-                            if (res2.ok && data2.ok) location.reload();
-                            else alert(data2.message || 'Swap failed');
-                        }
-                    } else {
-                        alert(data?.message || 'Move not allowed');
-                    }
-                    return;
-                }
-                if (data.ok) location.reload(); else alert(data.message || 'Move failed');
-            } catch (e) {
-                alert('Network error');
-            }
-        }
-
-        // ---------- Render ONLY selected teacher ----------
-        function showOnlyTeacher() {
-            const tid = document.getElementById('teacherSel').value;
-            const title = document.getElementById('teacherPanelTitle');
-            const body = document.getElementById('teacherPanelBody');
-
-            title.textContent = `Teacher: ${document.querySelector(`#teacherSel option[value="${tid}"]`)?.textContent || '—'}`;
-
-            const m = BY_TEACHER[tid] || {};
-
-            let thead = `<thead class="bg-gray-100"><tr class="text-gray-700">
-      <th class="text-left py-2 px-3 w-28">Day \\ Slot</th>`;
-            SLOTS.forEach(s => thead += `<th class="text-left py-2 px-2 sm:px-3">P${s}</th>`);
-            thead += `</tr></thead>`;
-
-            let tbody = `<tbody class="divide-y divide-gray-100">`;
-            DAYS.forEach(d => {
-                tbody += `<tr class="bg-white">
-        <th class="text-left py-2 px-3 font-medium text-gray-700 sticky left-0 bg-white">${DAY_NAMES[d] || ('Day ' + d)}</th>`;
-                SLOTS.forEach(s => {
-                    const cell = (m[d] && m[d][s]) ? m[d][s] : null;
-                    const tsId = (TS_MAP[d] && TS_MAP[d][s]) ? TS_MAP[d][s] : '';
-                    if (cell) {
-                        const subj = cell.subject;
-                        const group = cell.group;
-                        const chip = subjectChip(subj);
-                        const entryId = cell.entry_id ?? null;
-                        const draggableAttr = entryId ? `draggable="true" ondragstart="onDragStart(event)" data-entry-id="${entryId}"` : '';
-                        tbody += `<td class="align-top min-h-[48px] py-1.5 px-2 sm:px-3"
-                      data-timeslot-id="${tsId}"
-                      ondragover="onDragOver(event)"
-                      ondragleave="onDragLeave(event)"
-                      ondrop="onDrop(event, ${REQ_ID})">
-                      <div class="rounded-lg border border-gray-200 bg-white px-2 py-1.5 cursor-grab shadow-sm hover:shadow transition"
-                           ${draggableAttr}
-                           title="${subj} • ${group}">
-                        <span class="inline-flex items-center gap-2">
-                          <span class="inline-flex items-center rounded-md px-2 py-0.5 text-[11px] ring-1 ${chip}">${subj}</span>
-                          <span class="text-gray-600 truncate max-w-[12rem]">— ${group}</span>
-                        </span>
-                      </div>
-                    </td>`;
-                    } else {
-                        tbody += `<td class="align-top min-h-[48px] py-1.5 px-2 sm:px-3"
-                      data-timeslot-id="${tsId}"
-                      ondragover="onDragOver(event)"
-                      ondragleave="onDragLeave(event)"
-                      ondrop="onDrop(event, ${REQ_ID})">
-                      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] border text-gray-600">Free</span>
-                    </td>`;
-                    }
-                });
-                tbody += `</tr>`;
-            });
-            tbody += `</tbody>`;
-
-            body.innerHTML = `<table class="w-full text-[13px] sm:text-sm">${thead}${tbody}</table>`;
-        }
-
-        // ---------- Render ONLY selected group ----------
-        function showOnlyGroup() {
-            const gid = document.getElementById('groupSel').value;
-            const title = document.getElementById('groupPanelTitle');
-            const body = document.getElementById('groupPanelBody');
-
-            title.textContent = `Group: ${document.querySelector(`#groupSel option[value="${gid}"]`)?.textContent || '—'}`;
-
-            const m = BY_GROUP[gid] || {};
-
-            let thead = `<thead class="bg-gray-100"><tr class="text-gray-700">
-      <th class="text-left py-2 px-3 w-28">Day \\ Slot</th>`;
-            SLOTS.forEach(s => thead += `<th class="text-left py-2 px-2 sm:px-3">P${s}</th>`);
-            thead += `</tr></thead>`;
-
-            let tbody = `<tbody class="divide-y divide-gray-100">`;
-            DAYS.forEach(d => {
-                tbody += `<tr class="bg-white">
-        <th class="text-left py-2 px-3 font-medium text-gray-700 sticky left-0 bg-white">${DAY_NAMES[d] || ('Day ' + d)}</th>`;
-                SLOTS.forEach(s => {
-                    const cell = (m[d] && m[d][s]) ? m[d][s] : null;
-                    const tsId = (TS_MAP[d] && TS_MAP[d][s]) ? TS_MAP[d][s] : '';
-                    if (cell) {
-                        const subj = cell.subject;
-                        const teacher = cell.teacher;
-                        const entryId = cell.entry_id;
-                        const chip = subjectChip(subj);
-                        tbody += `<td class="align-top min-h-[48px] py-1.5 px-2 sm:px-3"
-                      data-timeslot-id="${tsId}"
-                      ondragover="onDragOver(event)"
-                      ondragleave="onDragLeave(event)"
-                      ondrop="onDrop(event, ${REQ_ID})">
-                      <div class="rounded-lg border border-gray-200 bg-white px-2 py-1.5 cursor-grab shadow-sm hover:shadow transition"
-                           draggable="true"
-                           ondragstart="onDragStart(event)"
-                           data-entry-id="${entryId}"
-                           title="${subj} • ${teacher}">
-                        <span class="inline-flex items-center gap-2">
-                          <span class="inline-flex items-center rounded-md px-2 py-0.5 text-[11px] ring-1 ${chip}">${subj}</span>
-                          <span class="text-gray-600 truncate max-w-[12rem]">— ${teacher}</span>
-                        </span>
-                      </div>
-                    </td>`;
-                    } else {
-                        tbody += `<td class="align-top min-h-[48px] py-1.5 px-2 sm:px-3"
-                      data-timeslot-id="${tsId}"
-                      ondragover="onDragOver(event)"
-                      ondragleave="onDragLeave(event)"
-                      ondrop="onDrop(event, ${REQ_ID})">
-                      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] border text-gray-600">Free</span>
-                    </td>`;
-                    }
-                });
-                tbody += `</tr>`;
-            });
-            tbody += `</tbody>`;
-
-            body.innerHTML = `<table class="w-full text-[13px] sm:text-sm">${thead}${tbody}</table>`;
-        }
-
-        // Expose functions for inline handlers
-        window.showOnlyTeacher = showOnlyTeacher;
-        window.showOnlyGroup = showOnlyGroup;
-        window.onDragStart = onDragStart;
-        window.onDragOver = onDragOver;
-        window.onDragLeave = onDragLeave;
-        window.onDrop = onDrop;
-        window.switchTab = switchTab;
-
-        // Init
-        window.addEventListener('DOMContentLoaded', () => {
-            activateTab('full');
-            // Optionally pre-render current selections when tabs are opened later.
-        });
-    </script>
 
 
 </body>
