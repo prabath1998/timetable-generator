@@ -1,23 +1,25 @@
 <?php
 
-use App\Http\Controllers\TimetableUIController;
+use App\Http\Controllers\TimetableController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
     return view('welcome');
 });
 
-Route::get('/timetable', [TimetableUIController::class, 'index'])->name('tt.index');
-Route::post('/timetable/generate', [TimetableUIController::class, 'generate'])->name('tt.generate');
-Route::get('/timetable/{id}', [TimetableUIController::class, 'show'])->name('tt.show');
+Route::prefix('timetable')->name('tt.')->group(function () {
 
-// NEW: DnD endpoints
-Route::post('/timetable/{id}/move', [TimetableUIController::class, 'move'])->name('tt.move');
-Route::post('/timetable/{id}/validate', [TimetableUIController::class, 'validateNow'])->name('tt.validate');
-Route::get('/timetable/{id}/workload', [TimetableUIController::class, 'workload'])->name('tt.workload');
-// routes/web.php
-Route::get('/timetable/{id}/status', [\App\Http\Controllers\TimetableController::class,'status'])
-    ->name('tt.status');
+    Route::get('/', [TimetableController::class, 'index'])->name('index');
+    Route::post('generate', [TimetableController::class, 'generate'])->name('generate');
+
+    Route::prefix('{id}')->group(function () {
+        Route::get('/', [TimetableController::class, 'show'])->name('show');
+        Route::post('move', [TimetableController::class, 'move'])->name('move');
+        Route::post('validate', [TimetableController::class, 'validateNow'])->name('validate');
+        Route::get('workload', [TimetableController::class, 'workload'])->name('workload');
+        Route::get('status', [TimetableController::class, 'status'])->name('status');
+    });
+});
 
 
 
