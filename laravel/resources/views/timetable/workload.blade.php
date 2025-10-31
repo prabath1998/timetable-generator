@@ -149,7 +149,7 @@
       dataLabels: { enabled:false },
       xaxis: { categories:names, max: WEEKLY, tickAmount: 8 },
       grid: { borderColor:'#e5e7eb' },
-      colors: ['#111827'],
+      colors: ['#4169E1'],
       tooltip: { y: { formatter:(v)=>`${v} / ${WEEKLY}` } }
     };
     if (bars) bars.destroy();
