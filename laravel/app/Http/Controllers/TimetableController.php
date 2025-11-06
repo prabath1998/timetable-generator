@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\FacadesDB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 
 class TimetableController extends Controller
 {
@@ -14,13 +15,11 @@ class TimetableController extends Controller
         $requests = DB::table('timetable_requests')
             ->orderByDesc('id')->limit(10)->get();
 
-        // For a quick “Generate” form: show available soft options, etc.
         return view('timetable.index', compact('requests'));
     }
 
     public function generate(Request $request)
     {
-        // collect data as API does
         $groups = DB::table('groups')->get();
         $timeslots = DB::table('timeslots')->orderBy('day_of_week')->orderBy('slot_index')->get();
         $assignments = DB::table('group_teacher')
@@ -97,7 +96,6 @@ class TimetableController extends Controller
         }
     }
 
-    // TimetableController@show
     public function show($id)
     {
         $days  = range(1, 5);
@@ -122,8 +120,8 @@ class TimetableController extends Controller
                 's.name as subject','t.name as teacher','g.name as group',
             ]);
 
-        $byGroup = [];   // [group_id][day][slot] => {subject,teacher,entry_id}
-        $byTeacher = []; // [teacher_id][day][slot] => {subject,group,entry_id}
+        $byGroup = [];
+        $byTeacher = [];
         foreach ($rows as $r) {
             $byGroup[$r->group_id][$r->day_of_week][$r->slot_index] = [
                 'subject' => $r->subject,'teacher' => $r->teacher,'entry_id' => $r->entry_id,
@@ -153,7 +151,6 @@ class TimetableController extends Controller
 
     public function move(Request $request, $id)
     {
-        // payload: entry_id (moved card), to_timeslot_id, (optional) swap_with_entry_id
         $entryId = (int) $request->input('entry_id');
         $toTsId  = (int) $request->input('to_timeslot_id');
         $swapWith = $request->input('swap_with_entry_id') ? (int) $request->input('swap_with_entry_id') : null;
@@ -164,7 +161,6 @@ class TimetableController extends Controller
             return response()->json(['ok' => false,'message' => 'Entry not found'], 404);
         }
 
-        // common: check teacher/time clash & group/time clash at destination
         $hasGroupClash = DB::table('timetable_entries')
             ->where('timetable_request_id', $id)
             ->where('group_id', $entry->group_id)
@@ -172,7 +168,6 @@ class TimetableController extends Controller
             ->where('id', '!=', $entryId)
             ->exists();
 
-        // teacher cannot teach two groups at the same time
         $hasTeacherClash = DB::table('timetable_entries')
             ->where('timetable_request_id', $id)
             ->where('teacher_id', $entry->teacher_id)
@@ -180,14 +175,12 @@ class TimetableController extends Controller
             ->where('id', '!=', $entryId)
             ->exists();
 
-        // If destination is occupied by another entry, we may allow a swap.
         $destEntry = DB::table('timetable_entries')
             ->where('timetable_request_id', $id)
             ->where('timeslot_id', $toTsId)
             ->first();
 
         if ($destEntry && !$swapWith) {
-            // client didn’t request swap explicitly, tell it who sits there
             return response()->json([
                 'ok' => false,
                 'needs_swap' => true,
@@ -197,7 +190,6 @@ class TimetableController extends Controller
         }
 
         if ($swapWith) {
-            // Validate swap: moving A to B.ts and B to A.ts should not create clashes
             $a = $entry;
             $b = DB::table('timetable_entries')
                 ->where('id', $swapWith)
@@ -206,7 +198,6 @@ class TimetableController extends Controller
                 return response()->json(['ok' => false,'message' => 'Swap target not found'], 404);
             }
 
-            // Check A -> B.ts constraints
             $a_group_clash = DB::table('timetable_entries')
                 ->where('timetable_request_id', $id)
                 ->where('group_id', $a->group_id)
@@ -220,7 +211,6 @@ class TimetableController extends Controller
                 ->whereNotIn('id', [$a->id, $b->id])
                 ->exists();
 
-            // Check B -> A.ts constraints
             $b_group_clash = DB::table('timetable_entries')
                 ->where('timetable_request_id', $id)
                 ->where('group_id', $b->group_id)
@@ -249,7 +239,6 @@ class TimetableController extends Controller
             return response()->json(['ok' => true,'swapped' => true]);
         }
 
-        // Simple move (no swap)
         if ($hasGroupClash || $hasTeacherClash) {
             return response()->json([
                 'ok' => false,
@@ -266,10 +255,8 @@ class TimetableController extends Controller
 
     public function validateNow(Request $request, $id)
     {
-        // Optional: ask solver to validate current plan strictly
         $solverUrl = rtrim(config('app.solver_url', env('SOLVER_URL')), '/');
 
-        // Build current state
         $timeslots = DB::table('timeslots')->orderBy('day_of_week')->orderBy('slot_index')->get();
         $groups    = DB::table('groups')->get();
         $assigns   = DB::table('group_teacher')
@@ -285,10 +272,9 @@ class TimetableController extends Controller
             'teaching'  => $assigns->map(fn ($a) => [
                 'group_id' => $a->group_id,'teacher_id' => $a->teacher_id,'subject_id' => $a->subject_id,'weekly_slots' => $a->weekly_slots
             ])->all(),
-            'locked'    => $locked->toArray() // pre-assigned fixed placements
+            'locked'    => $locked->toArray()
         ];
 
-        // FastAPI side will implement /validate (or /solve_fixed) to check.
         $res = Http::timeout(60)->post($solverUrl.'/validate', $payload);
         if (!$res->ok()) {
             return response()->json(['ok' => false,'message' => 'Solver validation failed','detail' => $res->body()], 422);
@@ -296,13 +282,11 @@ class TimetableController extends Controller
         return response()->json($res->json());
     }
 
-    public function workload($id)
+    public function getTeacherWorkload($id)
     {
-        // Teachers
         $teachers = DB::table('teachers')->select('id', 'name')->orderBy('name')->get();
         $teacherIndex = $teachers->pluck('name', 'id'); // [id => name]
 
-        // Total periods per teacher for this timetable
         $totals = DB::table('timetable_entries as e')
             ->where('e.timetable_request_id', $id)
             ->join('teachers as t', 't.id', '=', 'e.teacher_id')
@@ -310,7 +294,6 @@ class TimetableController extends Controller
             ->groupBy('e.teacher_id')
             ->get();
 
-        // Periods per teacher per day (for heatmap)
         $perDay = DB::table('timetable_entries as e')
             ->where('e.timetable_request_id', $id)
             ->join('timeslots as ts', 'ts.id', '=', 'e.timeslot_id')
@@ -318,7 +301,6 @@ class TimetableController extends Controller
             ->groupBy('e.teacher_id', 'ts.day_of_week')
             ->get();
 
-        // Build arrays for charts
         $barCategories = [];
         $barData = [];
 
@@ -328,11 +310,9 @@ class TimetableController extends Controller
             $barData[] = (int) $count;
         }
 
-        // Heatmap series: one series per teacher, x = day, y = count
         $dayNames = [1 => 'Mon',2 => 'Tue',3 => 'Wed',4 => 'Thu',5 => 'Fri',6 => 'Sat',7 => 'Sun'];
         $heatmapSeries = [];
         foreach ($teachers as $t) {
-            // Initialize 1..7 to 0
             $row = [];
             for ($d = 1; $d <= 7; $d++) {
                 $row[$d] = 0;
@@ -348,7 +328,6 @@ class TimetableController extends Controller
             ];
         }
 
-        // Also fetch the request for header/breadcrumb
         $req = DB::table('timetable_requests')->where('id', $id)->first();
 
         $weeklySlots = DB::table('timeslots')->count();
@@ -363,7 +342,7 @@ class TimetableController extends Controller
 
     }
 
-    public function status($id)
+    public function getStatus($id)
     {
         $r = DB::table('timetable_requests')->find($id);
         if (!$r) {
@@ -374,6 +353,78 @@ class TimetableController extends Controller
             'error'  => $r->error,
         ]);
     }
+
+    public function getSubjectUsage($id)
+    {
+        $groups   = DB::table('groups')->select('id', 'name')->orderBy('name')->get();
+        $subjects = DB::table('subjects')->select('id', 'name')->orderBy('name')->get();
+
+        $groupId   = request('group_id', $groups->first()->id ?? null);
+        $subjectId = request('subject_id', $subjects->first()->id ?? null);
+
+        if (!$groupId || !$subjectId) {
+            return view('timetable.subject_usage', [
+                'id' => $id, 'groups' => $groups, 'subjects' => $subjects,
+                'groupId' => $groupId, 'subjectId' => $subjectId,
+                'weeklySlots' => DB::table('timeslots')->count(),
+                'total' => 0, 'perDaySeries' => [], 'rows' => collect(),
+            ]);
+        }
+
+        $perDayRaw = DB::table('timetable_entries as e')
+            ->join('timeslots as ts', 'ts.id', '=', 'e.timeslot_id')
+            ->where('e.timetable_request_id', $id)
+            ->where('e.group_id', $groupId)
+            ->where('e.subject_id', $subjectId)
+            ->select('ts.day_of_week', DB::raw('count(*) as c'))
+            ->groupBy('ts.day_of_week')
+            ->pluck('c', 'ts.day_of_week')
+            ->all();
+
+        $dayNames = [1 => 'Mon',2 => 'Tue',3 => 'Wed',4 => 'Thu',5 => 'Fri',6 => 'Sat',7 => 'Sun'];
+        $days     = array_keys($dayNames);
+        $perDaySeries = [
+            'categories' => array_values($dayNames),
+            'data'       => array_map(fn ($d) => (int)($perDayRaw[$d] ?? 0), $days),
+        ];
+        $total = array_sum($perDaySeries['data']);
+
+        $required = null;
+        $gradeId  = DB::table('groups')->where('id', $groupId)->value('grade_id');
+        if (Schema::hasTable('grade_subject_requirements')) {
+            $required = DB::table('grade_subject_requirements')
+                ->where('grade_id', $gradeId)->where('subject_id', $subjectId)
+                ->value('periods_per_week');
+        }
+
+        $rows = DB::table('timetable_entries as e')
+            ->join('timeslots as ts', 'ts.id', '=', 'e.timeslot_id')
+            ->leftJoin('teachers as t', 't.id', '=', 'e.teacher_id')
+            ->where('e.timetable_request_id', $id)
+            ->where('e.group_id', $groupId)
+            ->where('e.subject_id', $subjectId)
+            ->orderBy('ts.day_of_week')->orderBy('ts.slot_index')
+            ->get([
+                'ts.day_of_week','ts.slot_index','ts.start_time','ts.end_time',
+                't.name as teacher_name'
+            ]);
+
+        return view('timetable.subject_usage', [
+            'id' => $id,
+            'groups' => $groups,
+            'subjects' => $subjects,
+            'groupId' => $groupId,
+            'subjectId' => $subjectId,
+            'groupName' => $groups->firstWhere('id', $groupId)->name ?? '',
+            'subjectName' => $subjects->firstWhere('id', $subjectId)->name ?? '',
+            'weeklySlots' => DB::table('timeslots')->count(), // e.g. 40
+            'total' => $total,
+            'required' => $required,
+            'perDaySeries' => $perDaySeries,
+            'rows' => $rows,
+        ]);
+    }
+
 
 
 }
