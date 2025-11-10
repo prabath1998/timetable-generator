@@ -18,7 +18,7 @@ class TimetableController extends Controller
         return view('timetable.index', compact('requests'));
     }
 
-    public function generate(Request $request)
+    public function generateTimetable(Request $request)
     {
         $groups = DB::table('groups')->get();
         $timeslots = DB::table('timeslots')->orderBy('day_of_week')->orderBy('slot_index')->get();
@@ -149,7 +149,7 @@ class TimetableController extends Controller
     }
 
 
-    public function move(Request $request, $id)
+    public function moveTimeslot(Request $request, $id)
     {
         $entryId = (int) $request->input('entry_id');
         $toTsId  = (int) $request->input('to_timeslot_id');
