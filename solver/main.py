@@ -112,8 +112,7 @@ def solve(req: SolveRequest):
                 model.Add(p == var)
                 penalty_vars.append(p)
         model.Minimize(sum(penalty_vars) * weight)
-
-    # If no objective, still need something:
+    
     if model.Proto().objective is None:
         model.Maximize(0)
 
