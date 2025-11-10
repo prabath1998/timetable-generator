@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Dict
 from ortools.sat.python import cp_model
-
 app = FastAPI()
 
 class Timeslot(BaseModel):
