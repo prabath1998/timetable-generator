@@ -16,7 +16,7 @@ Route::prefix('timetable')->name('tt.')->group(function () {
 
     Route::prefix('{id}')->group(function () {
         Route::get('/', [TimetableController::class, 'show'])->name('show');
-        Route::post('moveTimeslot', [TimetableController::class, 'move'])->name('move');
+        Route::post('move', [TimetableController::class, 'moveTimeslot'])->name('move');
         Route::post('validate', [TimetableController::class, 'validateNow'])->name('validate');
         Route::get('workload', [TimetableController::class, 'getTeacherWorkload'])->name('workload');
         Route::get('status', [TimetableController::class, 'getStatus'])->name('status');
