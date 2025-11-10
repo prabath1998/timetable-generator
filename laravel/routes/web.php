@@ -10,7 +10,7 @@ Route::get('/', function () {
 Route::prefix('timetable')->name('tt.')->group(function () {
 
     Route::get('/', [TimetableController::class, 'index'])->name('index');
-    Route::post('generateTimetable', [TimetableController::class, 'generate'])->name('generate');
+    Route::post('generate', [TimetableController::class, 'generateTimetable'])->name('generate');
 
 
 
